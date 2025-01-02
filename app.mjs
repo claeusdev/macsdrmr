@@ -7,20 +7,58 @@ import prettyBytes from 'pretty-bytes';
 
 class MacOSCleaner {
 	constructor() {
-		// These are the main locations where macOS stores system data and caches
 		this.systemPaths = [
-			'/private/var/db/diagnostics',       // System diagnostics
-			'/private/var/folders',              // Per-user temporary files
-			'/private/var/log',                  // System logs
-			'/Library/Caches',                   // System-wide caches
-			'/Library/Logs',                     // System-wide logs
-			'/System/Library/Caches',            // System caches
-			'/private/var/vm',                   // Swap files
-			'/private/var/tmp',                  // Temporary files
+			'/private/var/db/diagnostics',
+			'/private/var/folders',
+			'/private/var/log',
+			'/Library/Caches',
+			'/Library/Logs',
+			'/System/Library/Caches',
+			'/private/var/vm',
+			'/private/var/tmp',
 			path.join(os.homedir(), 'Library/Caches'),
-			path.join(os.homedir(), 'Library/Containers'),  // App containers
+			path.join(os.homedir(), 'Library/Containers'),
 			path.join(os.homedir(), 'Library/Application Support')
 		];
+
+		this.protectedPaths = [
+			'/System',
+			'/Library/LaunchDaemons',
+			'/Library/LaunchAgents',
+			'/System/Library/LaunchDaemons',
+			'/System/Library/LaunchAgents'
+		];
+	}
+
+	async analyzePath(inputPath) {
+		const dirPath = path.resolve(inputPath.replace(/^~/, os.homedir()));
+		const results = [];
+
+		try {
+			const items = await fs.readdir(dirPath);
+
+			for (const item of items) {
+				const fullPath = path.join(dirPath, item);
+				try {
+					const stats = await fs.stat(fullPath);
+					const size = await this.getTotalSize(fullPath);
+
+					results.push({
+						name: item,
+						path: fullPath,
+						...size,
+						isDirectory: stats.isDirectory(),
+						modifiedTime: stats.mtime
+					});
+				} catch (err) {
+					console.warn(`Skipping ${item}: ${err.message}`);
+				}
+			}
+
+			return results.sort((a, b) => b.totalBytes - a.totalBytes);
+		} catch (error) {
+			throw new Error(`Failed to analyze ${dirPath}: ${error.message}`);
+		}
 	}
 
 	async getTotalSize(inputPath) {
@@ -30,7 +68,6 @@ class MacOSCleaner {
 		async function calculateSize(dirPath) {
 			try {
 				const items = await fs.readdir(dirPath);
-
 				for (const item of items) {
 					const fullPath = path.join(dirPath, item);
 					try {
@@ -41,13 +78,9 @@ class MacOSCleaner {
 							totalBytes += stats.size;
 							fileCount++;
 						}
-					} catch (err) {
-						// Skip files we can't access
-					}
+					} catch (err) { }
 				}
-			} catch (err) {
-				// Skip directories we can't access
-			}
+			} catch (err) { }
 		}
 
 		try {
@@ -59,7 +92,6 @@ class MacOSCleaner {
 				fileCount = 1;
 			}
 		} catch (error) {
-			// Skip if we can't access the path
 			return { totalBytes: 0, prettySize: '0 B', items: 0 };
 		}
 
@@ -72,7 +104,6 @@ class MacOSCleaner {
 
 	async analyzeSystemData() {
 		const results = [];
-
 		console.log('Analyzing system data locations...\n');
 
 		for (const dirPath of this.systemPaths) {
@@ -85,33 +116,95 @@ class MacOSCleaner {
 						...size
 					});
 				}
-			} catch (err) {
-				// Skip inaccessible locations
-			}
+			} catch (err) { }
 		}
 
 		return results.sort((a, b) => b.totalBytes - a.totalBytes);
+	}
+
+	isProtectedPath(itemPath) {
+		return this.protectedPaths.some(protectedPath => itemPath.startsWith(protectedPath));
+	}
+
+	async removeItem(inputPath) {
+		const itemPath = path.resolve(inputPath.replace(/^~/, os.homedir()));
+
+		try {
+			// Safety checks
+			if (this.isProtectedPath(itemPath)) {
+				throw new Error('Cannot remove protected system path');
+			}
+
+			const stats = await fs.stat(itemPath);
+
+			// Get size before removal for reporting
+			const size = await this.getTotalSize(itemPath);
+
+			if (stats.isDirectory()) {
+				await fs.rm(itemPath, { recursive: true, force: true });
+			} else {
+				await fs.unlink(itemPath);
+			}
+
+			return size;
+		} catch (error) {
+			throw new Error(`Failed to remove ${itemPath}: ${error.message}`);
+		}
 	}
 }
 
 // CLI interface
 async function main() {
 	const cleaner = new MacOSCleaner();
+	const command = process.argv[2];
+	const targetPath = process.argv[3];
 
 	try {
-		const items = await cleaner.analyzeSystemData();
+		switch (command) {
+			case 'scan':
+				const items = await cleaner.analyzeSystemData();
+				console.log('\nSystem Data Analysis:');
+				console.table(items.map(item => ({
+					'Location': item.path,
+					'Size': item.prettySize,
+					'Files': item.items
+				})));
 
-		console.log('\nSystem Data Analysis:');
-		console.table(items.map(item => ({
-			'Location': item.path,
-			'Size': item.prettySize,
-			'Files': item.items
-		})));
+				const totalBytes = items.reduce((acc, item) => acc + item.totalBytes, 0);
+				console.log(`\nTotal System Data Size: ${prettyBytes(totalBytes)}`);
+				console.log(`Total Files: ${items.reduce((acc, item) => acc + item.items, 0)}`);
+				break;
 
-		const totalBytes = items.reduce((acc, item) => acc + item.totalBytes, 0);
-		console.log(`\nTotal System Data Size: ${prettyBytes(totalBytes)}`);
-		console.log(`Total Files: ${items.reduce((acc, item) => acc + item.items, 0)}`);
+			case 'inspect':
+				if (!targetPath) {
+					throw new Error('Please provide a path to inspect');
+				}
+				const contents = await cleaner.analyzePath(targetPath);
+				console.log(`\nAnalyzing contents of: ${targetPath}\n`);
+				console.table(contents.map(item => ({
+					'Name': item.name,
+					'Size': item.prettySize,
+					'Files': item.items,
+					'Type': item.isDirectory ? 'directory' : 'file',
+					'Modified': item.modifiedTime.toLocaleString()
+				})));
+				break;
 
+			case 'remove':
+				if (!targetPath) {
+					throw new Error('Please provide a path to remove');
+				}
+				const removedSize = await cleaner.removeItem(targetPath);
+				console.log(`Successfully removed: ${targetPath}`);
+				console.log(`Freed up: ${removedSize.prettySize}`);
+				break;
+
+			default:
+				console.log('Usage:');
+				console.log('  node app.mjs scan               # Show all system data locations and sizes');
+				console.log('  node app.mjs inspect <path>     # Show contents of specific directory');
+				console.log('  node app.mjs remove <path>      # Remove specific file or directory');
+		}
 	} catch (error) {
 		console.error('Error:', error.message);
 		process.exit(1);
