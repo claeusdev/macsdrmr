@@ -34,32 +34,30 @@ class MacOSCleaner {
 	async analyzePath(inputPath) {
 		const dirPath = path.resolve(inputPath.replace(/^~/, os.homedir()));
 		const results = [];
+		const items = await fs.readdir(dirPath);
 
-		try {
-			const items = await fs.readdir(dirPath);
-
-			for (const item of items) {
-				const fullPath = path.join(dirPath, item);
-				try {
-					const stats = await fs.stat(fullPath);
-					const size = await this.getTotalSize(fullPath);
-
-					results.push({
-						name: item,
-						path: fullPath,
-						...size,
-						isDirectory: stats.isDirectory(),
-						modifiedTime: stats.mtime
-					});
-				} catch (err) {
-					console.warn(`Skipping ${item}: ${err.message}`);
-				}
+		const tasks = items.map(async (item) => {
+			const fullPath = path.join(dirPath, item)
+			try {
+				const stats = await fs.stat(fullPath)
+				const size = stats.isDirectory()
+					? await this.makeWorker(fullPath)
+					: { totalBytes: stats.size, prettysize: prettyBytes(stats.size), items: 1}
+				results.push({
+					name: item,
+					path: fullPath,
+					...size,
+					isDirectory: stats.isDirectory(),
+					modifiedTime: stats.mtime,
+				})
+			} catch (err) {
+				console.warn(`Skipping ${item}: ${err.message}`)
 			}
+		})
 
-			return results.sort((a, b) => b.totalBytes - a.totalBytes);
-		} catch (error) {
-			throw new Error(`Failed to analyze ${dirPath}: ${error.message}`);
-		}
+		await Promise.all(tasks);
+
+		return results.sort((a, b) => b.totalBytes - a.totalBytes)
 	}
 
 	async getTotalSize(inputPath) {
@@ -131,18 +129,22 @@ class MacOSCleaner {
 		const results = [];
 		console.log('Analyzing system data locations...\n');
 
-		for (const dirPath of this.systemPaths) {
+		const tasks = this.systemPaths.map(async (dirPath) => {
 			try {
 				console.log(`Scanning ${dirPath}...`);
-				const size = await this.getTotalSize(dirPath);
+				const size = await this.makeWorker(dirPath);
 				if (size.totalBytes > 0) {
 					results.push({
 						path: dirPath,
 						...size
 					});
 				}
-			} catch (err) { }
-		}
+			} catch (err) {
+				console.warn(`Error scanning ${dirPath}: ${err.message}`)
+			}
+		});
+
+		await Promise.all(tasks);
 
 		return results.sort((a, b) => b.totalBytes - a.totalBytes);
 	}
