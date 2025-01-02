@@ -4,7 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import prettyBytes from 'pretty-bytes';
-import { parentPort, Worker, workerData } from 'worker_threads';
+import { Worker } from 'worker_threads';
 
 class MacOSCleaner {
 	constructor() {
@@ -29,7 +29,25 @@ class MacOSCleaner {
 			'/System/Library/LaunchDaemons',
 			'/System/Library/LaunchAgents'
 		];
+
+		this.maxWorkers = os.cpus().length;
 	}
+
+	makeWorker(inputPath) {
+		return new Promise((resolve, reject) => {
+		const worker = new Worker('./worker.js', {
+			workerData: { inputPath },
+		});
+
+		worker.on('message', resolve);
+		worker.on('error', reject);
+		worker.on('exit', (code) => {
+			if (code !== 0) {
+			reject(new Error(`Worker stopped with exit code ${code}`));
+			}
+		});
+		});
+  	}
 
 	async analyzePath(inputPath) {
 		const dirPath = path.resolve(inputPath.replace(/^~/, os.homedir()));
@@ -58,71 +76,6 @@ class MacOSCleaner {
 		await Promise.all(tasks);
 
 		return results.sort((a, b) => b.totalBytes - a.totalBytes)
-	}
-
-	async getTotalSize(inputPath) {
-		let totalBytes = 0;
-		let fileCount = 0;
-
-		async function calculateSize(dirPath) {
-			try {
-				const items = await fs.readdir(dirPath);
-				for (const item of items) {
-					const fullPath = path.join(dirPath, item);
-					try {
-						const stats = await fs.stat(fullPath);
-						if (stats.isDirectory()) {
-							await calculateSize(fullPath);
-						} else {
-							totalBytes += stats.size;
-							fileCount++;
-						}
-					} catch (err) { }
-				}
-			} catch (err) { 
-
-			}
-		}
-
-		try {
-			const stats = await fs.stat(inputPath);
-			if (stats.isDirectory()) {
-				await calculateSize(inputPath);
-			} else {
-				totalBytes = stats.size;
-				fileCount = 1;
-			}
-		} catch (error) {
-			return { totalBytes: 0, prettySize: '0 B', items: 0 };
-		}
-
-		return {
-			totalBytes,
-			prettySize: prettyBytes(totalBytes),
-			items: fileCount
-		};
-	}
-
-	async worker_thread () {
-		const inputPath = workerData.inputPath;
-		const result = await getTotalSize(inputPath);
-		parentPort.postMessage(result)
-	};
-
-	makeWorker(inputPath) {
-		return new Promise ((resolve, reject) => {
-			const worker = new Worker(worker_thread, {
-				workerData: { inputPath}
-			});
-
-			worker.on('message', resolve);
-			worker.on('error', reject);
-			worker.on('exit', (code) => {
-				if(code !== 0) {
-					reject(new Error(`This worker terminated with exit code ${code}`))
-				}
-			});
-		});
 	}
 
 	async analyzeSystemData() {
