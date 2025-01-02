@@ -28,6 +28,8 @@ class MacOSCleaner {
 			'/System/Library/LaunchDaemons',
 			'/System/Library/LaunchAgents'
 		];
+
+		this.dryRun = false;
 	}
 
 	async analyzePath(inputPath) {
@@ -140,6 +142,15 @@ class MacOSCleaner {
 			// Get size before removal for reporting
 			const size = await this.getTotalSize(itemPath);
 
+			if(this.dryRun) {
+				return {
+				path: itemPath,
+                type: stats.isDirectory() ? 'directory' : 'file',
+                size: size,
+                wouldRemove: true
+				};
+			}
+
 			if (stats.isDirectory()) {
 				await fs.rm(itemPath, { recursive: true, force: true });
 			} else {
@@ -158,6 +169,8 @@ async function main() {
 	const cleaner = new MacOSCleaner();
 	const command = process.argv[2];
 	const targetPath = process.argv[3];
+
+	const isDryRun = process.argv.includes('--dry-run');
 
 	try {
 		switch (command) {
@@ -194,7 +207,20 @@ async function main() {
 				if (!targetPath) {
 					throw new Error('Please provide a path to remove');
 				}
-				const removedSize = await cleaner.removeItem(targetPath);
+				//Setting preview mode before removal
+				cleaner.dryRun = isDryRun;
+				const result = await cleaner.removeItem(targetPath);
+                
+                if (isDryRun) {
+                    console.log('DRY RUN - No files will be removed');
+                    console.log(`Would remove: ${result.path}`);
+                    console.log(`Would free up: ${result.size.prettySize}`);
+                } else {
+                    console.log(`Successfully removed: ${result.path}`);
+                    console.log(`Freed up: ${result.size.prettySize}`);
+                }
+                break;
+
 				console.log(`Successfully removed: ${targetPath}`);
 				console.log(`Freed up: ${removedSize.prettySize}`);
 				break;
