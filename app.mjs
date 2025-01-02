@@ -35,17 +35,19 @@ class MacOSCleaner {
 
 	makeWorker(inputPath) {
 		return new Promise((resolve, reject) => {
-		const worker = new Worker('./worker.js', {
-			workerData: { inputPath },
-		});
+			const worker = new Worker('./worker.js', {
+				workerData: { inputPath },
+			});
+			
+			worker.on('message', resolve);
+			worker.on('error', reject);
+			worker.on('exit', (code) => {
+				if (code !== 0) {
+				reject(new Error(`Worker stopped with exit code ${code}`));
+				}
+			});
 
-		worker.on('message', resolve);
-		worker.on('error', reject);
-		worker.on('exit', (code) => {
-			if (code !== 0) {
-			reject(new Error(`Worker stopped with exit code ${code}`));
-			}
-		});
+			console.log(`Scan completed for ${inputPath}`)
 		});
   	}
 
