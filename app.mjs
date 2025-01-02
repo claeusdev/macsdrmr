@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import prettyBytes from 'pretty-bytes';
+import { parentPort, Worker, workerData } from 'worker_threads';
 
 class MacOSCleaner {
 	constructor() {
@@ -80,7 +81,9 @@ class MacOSCleaner {
 						}
 					} catch (err) { }
 				}
-			} catch (err) { }
+			} catch (err) { 
+
+			}
 		}
 
 		try {
@@ -100,6 +103,28 @@ class MacOSCleaner {
 			prettySize: prettyBytes(totalBytes),
 			items: fileCount
 		};
+	}
+
+	async worker_thread () {
+		const inputPath = workerData.inputPath;
+		const result = await getTotalSize(inputPath);
+		parentPort.postMessage(result)
+	};
+
+	makeWorker(inputPath) {
+		return new Promise ((resolve, reject) => {
+			const worker = new Worker(worker_thread, {
+				workerData: { inputPath}
+			});
+
+			worker.on('message', resolve);
+			worker.on('error', reject);
+			worker.on('exit', (code) => {
+				if(code !== 0) {
+					reject(new Error(`This worker terminated with exit code ${code}`))
+				}
+			});
+		});
 	}
 
 	async analyzeSystemData() {
