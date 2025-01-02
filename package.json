@@ -1,15 +1,20 @@
 {
-  "name": "sysremvr",
+  "name": "mac-rmvr",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "A tool for analyzing and cleaning macOS system data storage",
+  "main": "app.mjs",
   "type": "module",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "start": "node app.mjs"
   },
-  "keywords": ["macos", "system-data"],
+  "keywords": [
+    "macos",
+    "cleanup",
+    "system-data",
+    "storage"
+  ],
   "author": "Nana Adjei Manu",
   "license": "MIT",
-  "description": "View and decluter macos system data",
   "dependencies": {
     "pretty-bytes": "^6.1.1"
   }
