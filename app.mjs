@@ -103,6 +103,11 @@ class MacOSCleaner {
 			for (let i = 0; i < items.length; i += chunkSize){
 				const chunk = items.slice(i, i + chunkSize);
                 await Promise.all(chunk.map(processItem));
+
+				if (items.length > 100) {
+                    const progress = Math.round((i + chunk.length) / items.length * 100);
+                    console.log(`Processing... ${progress}%`);
+                }
 			}
 
 			return results.sort((a, b) => b.totalBytes - a.totalBytes);
