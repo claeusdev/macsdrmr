@@ -4,6 +4,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import os from 'os';
 import prettyBytes from 'pretty-bytes';
+import { Worker, isMainThread, parentPort, workerData } from 'worker_threads'
 
 class MacOSCleaner {
 	constructor() {
@@ -30,31 +31,78 @@ class MacOSCleaner {
 		];
 
 		this.dryRun = false;
+
+		this.maxDepth = 3;
+		this.workerPool = new Set();
+		this.maxWorkers = os.cpus().length;
 	}
 
-	async analyzePath(inputPath) {
+	async createWorker(dirPath) {
+		return new Promise ((resolve, reject) => {
+			const worker = new Worker(fileURLToPath(import.meta.url), {
+				workerData: { dirPath, mode: 'getTotalSize'}
+			});
+
+			this.workerPool.add(worker);
+
+			worker.on('message', (result) => {
+				this.workerPool.delete(worker);
+				resolve(result);
+			})
+
+			worker.on('error', (error) => {
+				this.workerPool.delete(worker);
+				reject(error);
+			})
+
+			worker.on('exit', (code) => {
+				this.workerPool.delete(worker);
+				if (code !==0) {
+					reject(new Error(`Worker stopped with exit code ${code}`));
+				}
+			});
+		});
+	}
+
+	async analyzePath(inputPath, depth = 0) {
 		const dirPath = path.resolve(inputPath.replace(/^~/, os.homedir()));
 		const results = [];
 
 		try {
-			const items = await fs.readdir(dirPath);
-
-			for (const item of items) {
-				const fullPath = path.join(dirPath, item);
+			const items = await fs.readdir(dirPath, { withFileTypes: true});
+			const processItem = async(item) => {
+				const fullPath = path.join(dirPath, item.name);
 				try {
-					const stats = await fs.stat(fullPath);
-					const size = await this.getTotalSize(fullPath);
-
-					results.push({
-						name: item,
-						path: fullPath,
-						...size,
-						isDirectory: stats.isDirectory(),
-						modifiedTime: stats.mtime
-					});
+					if (item.isDirectory() && depth < this.maxDepth) {
+						const sixe = await this.createWorker(fullPath)
+						results.push({
+							name: item.name,
+							path: fullPath,
+							...size,
+							isDirectory: true,
+							modifiedTime:(await fs.stat(fullPath)).mtime
+						});
+					} else {
+						const stats = await fs.stat(fullPath);
+						results.push({
+							name: item.name,
+                            path: fullPath,
+                            totalBytes: stats.size,
+                            prettySize: prettyBytes(stats.size),
+                            items: 1,
+                            isDirectory: false,
+                            modifiedTime: stats.mtime
+						});
+					}
 				} catch (err) {
-					console.warn(`Skipping ${item}: ${err.message}`);
+					console.warn(`Skipping ${item.name}: ${err.message}`)
 				}
+			};
+
+			const chunkSize = 50;
+			for (let i = 0; i < items.length; i += chunkSize){
+				const chunk = items.slice(i, i + chunkSize);
+                await Promise.all(chunk.map(processItem));
 			}
 
 			return results.sort((a, b) => b.totalBytes - a.totalBytes);
@@ -63,46 +111,7 @@ class MacOSCleaner {
 		}
 	}
 
-	async getTotalSize(inputPath) {
-		let totalBytes = 0;
-		let fileCount = 0;
-
-		async function calculateSize(dirPath) {
-			try {
-				const items = await fs.readdir(dirPath);
-				for (const item of items) {
-					const fullPath = path.join(dirPath, item);
-					try {
-						const stats = await fs.stat(fullPath);
-						if (stats.isDirectory()) {
-							await calculateSize(fullPath);
-						} else {
-							totalBytes += stats.size;
-							fileCount++;
-						}
-					} catch (err) { }
-				}
-			} catch (err) { }
-		}
-
-		try {
-			const stats = await fs.stat(inputPath);
-			if (stats.isDirectory()) {
-				await calculateSize(inputPath);
-			} else {
-				totalBytes = stats.size;
-				fileCount = 1;
-			}
-		} catch (error) {
-			return { totalBytes: 0, prettySize: '0 B', items: 0 };
-		}
-
-		return {
-			totalBytes,
-			prettySize: prettyBytes(totalBytes),
-			items: fileCount
-		};
-	}
+	
 
 	async analyzeSystemData() {
 		const results = [];
@@ -111,14 +120,16 @@ class MacOSCleaner {
 		for (const dirPath of this.systemPaths) {
 			try {
 				console.log(`Scanning ${dirPath}...`);
-				const size = await this.getTotalSize(dirPath);
+				const size = await this.createWorker(dirPath);
 				if (size.totalBytes > 0) {
 					results.push({
 						path: dirPath,
 						...size
 					});
 				}
-			} catch (err) { }
+			} catch (err) {
+				console.warn(`Error scanning ${dirPath}: ${err.message}`)
+			 }
 		}
 
 		return results.sort((a, b) => b.totalBytes - a.totalBytes);
@@ -163,6 +174,47 @@ class MacOSCleaner {
 		}
 	}
 }
+
+async getTotalSize(inputPath) {
+		let totalBytes = 0;
+		let fileCount = 0;
+
+		async function calculateSize(dirPath) {
+			try {
+				const items = await fs.readdir(dirPath);
+				for (const item of items) {
+					const fullPath = path.join(dirPath, item);
+					try {
+						const stats = await fs.stat(fullPath);
+						if (stats.isDirectory()) {
+							await calculateSize(fullPath);
+						} else {
+							totalBytes += stats.size;
+							fileCount++;
+						}
+					} catch (err) { }
+				}
+			} catch (err) { }
+		}
+
+		try {
+			const stats = await fs.stat(inputPath);
+			if (stats.isDirectory()) {
+				await calculateSize(inputPath);
+			} else {
+				totalBytes = stats.size;
+				fileCount = 1;
+			}
+		} catch (error) {
+			return { totalBytes: 0, prettySize: '0 B', items: 0 };
+		}
+
+		return {
+			totalBytes,
+			prettySize: prettyBytes(totalBytes),
+			items: fileCount
+		};
+	}
 
 // CLI interface
 async function main() {
