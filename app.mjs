@@ -180,20 +180,22 @@ class MacOSCleaner {
 	}
 }
 
-async getTotalSize(inputPath) {
+if (!isMainThread){
+	const { dirPath, mode } = workerData
+	async function getTotalSize(inputPath) {
 		let totalBytes = 0;
 		let fileCount = 0;
 
 		async function calculateSize(dirPath) {
 			try {
-				const items = await fs.readdir(dirPath);
+				const items = await fs.readdir(dirPath, { withFileTypes: true});
 				for (const item of items) {
-					const fullPath = path.join(dirPath, item);
+					const fullPath = path.join(dirPath, item.name);
 					try {
-						const stats = await fs.stat(fullPath);
-						if (stats.isDirectory()) {
+						if (item.isDirectory()) {
 							await calculateSize(fullPath);
 						} else {
+							const stats = await fs.stat(fullPath);
 							totalBytes += stats.size;
 							fileCount++;
 						}
@@ -220,6 +222,11 @@ async getTotalSize(inputPath) {
 			items: fileCount
 		};
 	}
+	if (mode === 'calculateSize') {
+		getTotalSize(dirPath).then(result => parentPort.postMessage(result))
+	}
+}
+
 
 // CLI interface
 async function main() {
